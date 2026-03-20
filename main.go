@@ -99,6 +99,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 16,
+		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 	log.Printf("tiny-proxy :%s auth=%s whitelist=%d timeout=%s", port, authMode, len(whitelist), timeout)
 	log.Fatal(srv.ListenAndServe())
