@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -53,10 +54,10 @@ func init() {
 	} else {
 		authWindow = 30
 	}
-	hURL = env("HEADER_URL", "X-Proxy-Url")
-	hPrefix = env("HEADER_PREFIX", "X-Proxy-H-")
-	hBulk = env("HEADER_BULK", "X-Proxy-Headers")
-	hAuth = env("HEADER_AUTH", "X-Proxy-Auth")
+	hURL = http.CanonicalHeaderKey(env("HEADER_URL", "X-Proxy-Url"))
+	hPrefix = http.CanonicalHeaderKey(env("HEADER_PREFIX", "X-Proxy-H-"))
+	hBulk = http.CanonicalHeaderKey(env("HEADER_BULK", "X-Proxy-Headers"))
+	hAuth = http.CanonicalHeaderKey(env("HEADER_AUTH", "X-Proxy-Auth"))
 
 	if d, err := time.ParseDuration(env("TIMEOUT", "30s")); err == nil {
 		timeout = d
@@ -180,13 +181,17 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	// execute upstream request
 	resp, err := client.Do(pReq)
 	if err != nil {
-		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	// copy response headers
+	// copy response headers (skip hop-by-hop)
 	for k, vs := range resp.Header {
+		switch k {
+		case "Connection", "Keep-Alive", "Transfer-Encoding", "Te", "Trailer", "Upgrade":
+			continue
+		}
 		w.Header()[k] = vs
 	}
 	w.WriteHeader(resp.StatusCode)
@@ -205,7 +210,9 @@ func stream(w http.ResponseWriter, src io.Reader) {
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
-			w.Write(buf[:n])
+			if _, wErr := w.Write(buf[:n]); wErr != nil {
+				return // client disconnected
+			}
 			if canFlush {
 				f.Flush()
 			}
@@ -234,7 +241,8 @@ func auth(r *http.Request) bool {
 	case "none":
 		return true
 	case "key":
-		return r.Header.Get(hAuth) == authKey
+		got := []byte(r.Header.Get(hAuth))
+		return subtle.ConstantTimeCompare(got, []byte(authKey)) == 1
 	case "hash":
 		token := r.Header.Get(hAuth)
 		if token == "" {
