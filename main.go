@@ -25,8 +25,8 @@ var (
 	authKey    string
 	authSecret string
 	authWindow int64
-	whitelist    map[string]bool
-	wlSuffixes   []string
+	whitelist  map[string]bool
+	wlPatterns []string
 	hURL       string // header name for target URL
 	hPrefix    string // header prefix for forwarded headers
 	hBulk      string // header name for bulk JSON headers
@@ -85,8 +85,8 @@ func init() {
 	if wl != "" {
 		for _, h := range strings.Split(wl, ",") {
 			if h = strings.TrimSpace(strings.ToLower(h)); h != "" {
-				if strings.HasPrefix(h, "*") {
-					wlSuffixes = append(wlSuffixes, h[1:]) // *.foo.com → .foo.com
+				if strings.Contains(h, "*") {
+					wlPatterns = append(wlPatterns, h)
 				} else {
 					whitelist[h] = true
 				}
@@ -106,7 +106,7 @@ func main() {
 		MaxHeaderBytes:    1 << 16,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
-	log.Printf("tiny-proxy :%s auth=%s whitelist=%d+%d timeout=%s", port, authMode, len(whitelist), len(wlSuffixes), timeout)
+	log.Printf("tiny-proxy :%s auth=%s whitelist=%d+%d timeout=%s", port, authMode, len(whitelist), len(wlPatterns), timeout)
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -141,7 +141,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// whitelist check
-	if len(whitelist) > 0 || len(wlSuffixes) > 0 {
+	if len(whitelist) > 0 || len(wlPatterns) > 0 {
 		u, err := url.Parse(target)
 		if err != nil {
 			http.Error(w, "invalid target url", http.StatusBadRequest)
@@ -246,12 +246,34 @@ func hostAllowed(host string) bool {
 	if whitelist[host] {
 		return true
 	}
-	for _, s := range wlSuffixes {
-		if strings.HasSuffix(host, s) {
+	for _, p := range wlPatterns {
+		if matchHost(p, host) {
 			return true
 		}
 	}
 	return false
+}
+
+func matchHost(pattern, host string) bool {
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 1 {
+		return pattern == host
+	}
+	// check prefix
+	if !strings.HasPrefix(host, parts[0]) {
+		return false
+	}
+	rest := host[len(parts[0]):]
+	// check middle parts
+	for _, p := range parts[1 : len(parts)-1] {
+		i := strings.Index(rest, p)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+len(p):]
+	}
+	// check suffix
+	return strings.HasSuffix(rest, parts[len(parts)-1])
 }
 
 // --- auth ---
