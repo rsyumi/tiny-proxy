@@ -25,7 +25,8 @@ var (
 	authKey    string
 	authSecret string
 	authWindow int64
-	whitelist  map[string]bool
+	whitelist    map[string]bool
+	wlSuffixes   []string
 	hURL       string // header name for target URL
 	hPrefix    string // header prefix for forwarded headers
 	hBulk      string // header name for bulk JSON headers
@@ -84,7 +85,11 @@ func init() {
 	if wl != "" {
 		for _, h := range strings.Split(wl, ",") {
 			if h = strings.TrimSpace(strings.ToLower(h)); h != "" {
-				whitelist[h] = true
+				if strings.HasPrefix(h, "*") {
+					wlSuffixes = append(wlSuffixes, h[1:]) // *.foo.com → .foo.com
+				} else {
+					whitelist[h] = true
+				}
 			}
 		}
 	}
@@ -101,7 +106,7 @@ func main() {
 		MaxHeaderBytes:    1 << 16,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
-	log.Printf("tiny-proxy :%s auth=%s whitelist=%d timeout=%s", port, authMode, len(whitelist), timeout)
+	log.Printf("tiny-proxy :%s auth=%s whitelist=%d+%d timeout=%s", port, authMode, len(whitelist), len(wlSuffixes), timeout)
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -136,13 +141,13 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// whitelist check
-	if len(whitelist) > 0 {
+	if len(whitelist) > 0 || len(wlSuffixes) > 0 {
 		u, err := url.Parse(target)
 		if err != nil {
 			http.Error(w, "invalid target url", http.StatusBadRequest)
 			return
 		}
-		if !whitelist[strings.ToLower(u.Hostname())] {
+		if !hostAllowed(strings.ToLower(u.Hostname())) {
 			http.Error(w, "host not allowed", http.StatusForbidden)
 			return
 		}
@@ -233,6 +238,20 @@ func cors(w http.ResponseWriter) {
 	h.Set("Access-Control-Allow-Headers", "*")
 	h.Set("Access-Control-Expose-Headers", "*")
 	h.Set("Access-Control-Max-Age", "86400")
+}
+
+// --- whitelist ---
+
+func hostAllowed(host string) bool {
+	if whitelist[host] {
+		return true
+	}
+	for _, s := range wlSuffixes {
+		if strings.HasSuffix(host, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- auth ---
