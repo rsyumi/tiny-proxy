@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build binaries
+        run: |
+          set -e
+          VERSION="${GITHUB_REF_NAME}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+          mkdir -p dist
+
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            GOOS="${target%/*}"
+            GOARCH="${target#*/}"
+            EXT=""
+            [ "$GOOS" = "windows" ] && EXT=".exe"
+            echo "Building ${GOOS}/${GOARCH}..."
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath -ldflags="${LDFLAGS}" \
+              -o "dist/tiny-proxy-${VERSION}-${GOOS}-${GOARCH}${EXT}" .
+          done
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum tiny-proxy-* > checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/tiny-proxy-*
+            dist/checksums.txt
+          generate_release_notes: true

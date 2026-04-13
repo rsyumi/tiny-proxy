@@ -1,4 +1,5 @@
 .env
 tiny-proxy*
-.pem
-.key
+**/*.pem
+**/*.key
+**/*.crt
