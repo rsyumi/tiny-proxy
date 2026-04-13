@@ -33,6 +33,8 @@ var (
 	hBulk      string // header name for bulk JSON headers
 	hAuth      string // header name for auth token
 	timeout    time.Duration
+	tlsCert    string
+	tlsKey     string
 )
 
 var pool = sync.Pool{New: func() any { return make([]byte, 8192) }}
@@ -91,6 +93,9 @@ func init() {
 	hBulk = http.CanonicalHeaderKey(env("HEADER_BULK", "X-Proxy-Headers"))
 	hAuth = http.CanonicalHeaderKey(env("HEADER_AUTH", "X-Proxy-Auth"))
 
+	tlsCert = env("TLS_CERT", "")
+	tlsKey = env("TLS_KEY", "")
+
 	if d, err := time.ParseDuration(env("TIMEOUT", "30s")); err == nil {
 		timeout = d
 	} else {
@@ -137,8 +142,13 @@ func main() {
 		MaxHeaderBytes:    1 << 16,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
-	log.Printf("tiny-proxy :%s auth=%s whitelist=%d+%d timeout=%s", port, authMode, len(whitelist), len(wlPatterns), timeout)
-	log.Fatal(srv.ListenAndServe())
+	if tlsCert != "" && tlsKey != "" {
+		log.Printf("tiny-proxy :%s tls=on auth=%s whitelist=%d+%d timeout=%s", port, authMode, len(whitelist), len(wlPatterns), timeout)
+		log.Fatal(srv.ListenAndServeTLS(tlsCert, tlsKey))
+	} else {
+		log.Printf("tiny-proxy :%s tls=off auth=%s whitelist=%d+%d timeout=%s", port, authMode, len(whitelist), len(wlPatterns), timeout)
+		log.Fatal(srv.ListenAndServe())
+	}
 }
 
 // --- handler ---
