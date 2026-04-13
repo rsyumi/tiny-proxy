@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -17,6 +18,8 @@ import (
 	"sync"
 	"time"
 )
+
+var version = "dev"
 
 // --- config (loaded once at init) ---
 
@@ -142,13 +145,16 @@ func main() {
 		MaxHeaderBytes:    1 << 16,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
+	var err error
 	if tlsCert != "" && tlsKey != "" {
-		log.Printf("tiny-proxy :%s tls=on auth=%s whitelist=%d+%d timeout=%s", port, authMode, len(whitelist), len(wlPatterns), timeout)
-		log.Fatal(srv.ListenAndServeTLS(tlsCert, tlsKey))
+		log.Printf("tiny-proxy/%s :%s tls=on auth=%s whitelist=%d+%d timeout=%s", version, port, authMode, len(whitelist), len(wlPatterns), timeout)
+		err = srv.ListenAndServeTLS(tlsCert, tlsKey)
 	} else {
-		log.Printf("tiny-proxy :%s tls=off auth=%s whitelist=%d+%d timeout=%s", port, authMode, len(whitelist), len(wlPatterns), timeout)
-		log.Fatal(srv.ListenAndServe())
+		log.Printf("tiny-proxy/%s :%s tls=off auth=%s whitelist=%d+%d timeout=%s", version, port, authMode, len(whitelist), len(wlPatterns), timeout)
+		err = srv.ListenAndServe()
 	}
+	log.Println(err)
+	fmt.Scanln()
 }
 
 // --- handler ---
