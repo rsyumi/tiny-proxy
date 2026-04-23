@@ -3,3 +3,9 @@ tiny-proxy*
 **/*.pem
 **/*.key
 **/*.crt
+scripts/.ssh_key
+scripts/.ssh_key.pub
+scripts/cloudflared
+.claude
+.codex
+.vscode

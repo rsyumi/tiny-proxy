@@ -4,6 +4,26 @@
 
 ## 빠른 시작
 
+**Windows:** `scripts\setup.ps1`을 실행하면 바이너리 다운로드, 환경 설정, 터널 연결까지 자동으로 진행됩니다. 파일 탐색기에서는 `setup.bat` 파일을 더블클릭하세요.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
+```
+
+**Linux (Ubuntu/Debian):**
+
+```bash
+sudo apt install -y git curl openssh-client && { [ -d ~/tiny-proxy ] || git clone https://github.com/rsyumi/tiny-proxy.git ~/tiny-proxy; } && bash ~/tiny-proxy/scripts/setup.sh
+```
+
+**Android (Termux):**
+
+```bash
+pkg install -y git curl openssh && { [ -d ~/tiny-proxy ] || git clone https://github.com/rsyumi/tiny-proxy.git ~/tiny-proxy; } && bash ~/tiny-proxy/scripts/setup.sh
+```
+
+**직접 빌드:**
+
 ```bash
 go build -o tiny-proxy .
 ./tiny-proxy
