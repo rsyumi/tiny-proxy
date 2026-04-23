@@ -19,7 +19,7 @@ sudo apt install -y git curl openssh-client && { [ -d ~/tiny-proxy ] || git clon
 **Android (Termux):**
 
 ```bash
-pkg install -y git curl openssh && { [ -d ~/tiny-proxy ] || git clone https://github.com/rsyumi/tiny-proxy.git ~/tiny-proxy; } && bash ~/tiny-proxy/scripts/setup.sh
+pkg upgrade -y && pkg install -y git curl openssh && { [ -d ~/tiny-proxy ] || git clone https://github.com/rsyumi/tiny-proxy.git ~/tiny-proxy; } && bash ~/tiny-proxy/scripts/setup.sh
 ```
 
 **직접 빌드:**
