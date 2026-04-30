@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -34,11 +36,19 @@ var (
 	hURL       string // header name for target URL
 	hPrefix    string // header prefix for forwarded headers
 	hBulk      string // header name for bulk JSON headers
+	hTransform string // header name for body transform mode
 	hAuth      string // header name for auth token
 	timeout    time.Duration
 	tlsCert    string
 	tlsKey     string
 )
+
+const (
+	bodyTransformJSONToForm = "json-to-form-urlencoded"
+	maxTransformBodyBytes   = 64 << 10
+)
+
+var errTransformBodyTooLarge = errors.New("transform body too large")
 
 var pool = sync.Pool{New: func() any { return make([]byte, 8192) }}
 
@@ -94,6 +104,7 @@ func init() {
 	hURL = http.CanonicalHeaderKey(env("HEADER_URL", "X-Proxy-Url"))
 	hPrefix = http.CanonicalHeaderKey(env("HEADER_PREFIX", "X-Proxy-H-"))
 	hBulk = http.CanonicalHeaderKey(env("HEADER_BULK", "X-Proxy-Headers"))
+	hTransform = http.CanonicalHeaderKey(env("HEADER_BODY_TRANSFORM", "X-Proxy-Body-Transform"))
 	hAuth = http.CanonicalHeaderKey(env("HEADER_AUTH", "X-Proxy-Auth"))
 
 	tlsCert = env("TLS_CERT", "")
@@ -200,8 +211,24 @@ func handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	body := io.Reader(r.Body)
+	bodyTransformed := false
+	if r.Header.Get(hTransform) == bodyTransformJSONToForm {
+		formBody, err := jsonBodyToFormURLEncoded(r.Body)
+		if err != nil {
+			if errors.Is(err, errTransformBodyTooLarge) {
+				http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		body = strings.NewReader(formBody)
+		bodyTransformed = true
+	}
+
 	// build proxy request
-	pReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
+	pReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, body)
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -224,6 +251,9 @@ func handle(w http.ResponseWriter, r *http.Request) {
 				pReq.Header[name] = vs
 			}
 		}
+	}
+	if bodyTransformed {
+		pReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
 
 	// set default User-Agent if not provided
@@ -251,6 +281,65 @@ func handle(w http.ResponseWriter, r *http.Request) {
 
 	// stream body with flush (SSE/chunked/stream support)
 	stream(w, resp.Body)
+}
+
+func jsonBodyToFormURLEncoded(src io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(src, maxTransformBodyBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("invalid json body")
+	}
+	if len(data) > maxTransformBodyBytes {
+		return "", errTransformBodyTooLarge
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+
+	var body map[string]any
+	if err := dec.Decode(&body); err != nil {
+		return "", fmt.Errorf("invalid json body")
+	}
+	if dec.Decode(&struct{}{}) != io.EOF {
+		return "", fmt.Errorf("invalid json body")
+	}
+
+	values := url.Values{}
+	for k, v := range body {
+		if err := addFormValue(values, k, v); err != nil {
+			return "", err
+		}
+	}
+	return values.Encode(), nil
+}
+
+func addFormValue(values url.Values, key string, value any) error {
+	if scalar, ok := formScalar(value); ok {
+		values.Add(key, scalar)
+		return nil
+	}
+	if items, ok := value.([]any); ok {
+		for _, item := range items {
+			scalar, ok := formScalar(item)
+			if !ok {
+				return fmt.Errorf("unsupported form value for %q", key)
+			}
+			values.Add(key, scalar)
+		}
+		return nil
+	}
+	return fmt.Errorf("unsupported form value for %q", key)
+}
+
+func formScalar(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		return v, true
+	case json.Number:
+		return v.String(), true
+	case bool:
+		return strconv.FormatBool(v), true
+	}
+	return "", false
 }
 
 // --- streaming ---

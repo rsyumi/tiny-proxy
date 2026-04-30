@@ -53,6 +53,7 @@ cp .env.example .env
 | `HEADER_URL` | `X-Proxy-Url` | 대상 URL을 지정하는 헤더 이름 |
 | `HEADER_PREFIX` | `X-Proxy-H-` | 대상 서버로 전달할 헤더 접두사 |
 | `HEADER_BULK` | `X-Proxy-Headers` | JSON으로 여러 헤더를 전달하는 헤더 이름 |
+| `HEADER_BODY_TRANSFORM` | `X-Proxy-Body-Transform` | 요청 body 변환 모드를 지정하는 헤더 이름 |
 | `HEADER_AUTH` | `X-Proxy-Auth` | 프록시 인증 토큰 헤더 이름 |
 
 ## HTTPS 설정
@@ -117,5 +118,19 @@ curl \
   -H 'X-Proxy-Headers: %7B%22Authorization%22%3A%22Bearer%20token%22%7D' \
   http://localhost:8080
 ```
+
+JSON body를 `application/x-www-form-urlencoded`로 변환해서 대상 서버에 보낼 수 있습니다:
+
+```bash
+curl \
+  -X POST \
+  -H "X-Proxy-Url: https://api.example.com/token" \
+  -H "X-Proxy-Body-Transform: json-to-form-urlencoded" \
+  -H "Content-Type: application/json" \
+  -d '{"grant_type":"client_credentials","client_id":"abc","scope":["read","write"]}' \
+  http://localhost:8080
+```
+
+이 모드는 최상위 JSON object만 지원하며, 문자열/숫자/불리언 값과 그 배열을 form 값으로 변환합니다. 중첩 object나 중첩 배열은 `400 Bad Request`로 거절됩니다. 변환 대상 JSON body는 최대 64 KiB까지 허용되며, 초과하면 `413 Request Entity Too Large`로 거절됩니다.
 
 헬스체크: `GET /_health`
