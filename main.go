@@ -34,6 +34,7 @@ var (
 	whitelist  map[string]bool
 	wlPatterns []string
 	hURL       string // header name for target URL
+	hMethod    string // header name for upstream method
 	hPrefix    string // header prefix for forwarded headers
 	hBulk      string // header name for bulk JSON headers
 	hTransform string // header name for body transform mode
@@ -102,6 +103,7 @@ func init() {
 		authWindow = 30
 	}
 	hURL = http.CanonicalHeaderKey(env("HEADER_URL", "X-Proxy-Url"))
+	hMethod = http.CanonicalHeaderKey(env("HEADER_METHOD", "X-Proxy-Method"))
 	hPrefix = http.CanonicalHeaderKey(env("HEADER_PREFIX", "X-Proxy-H-"))
 	hBulk = http.CanonicalHeaderKey(env("HEADER_BULK", "X-Proxy-Headers"))
 	hTransform = http.CanonicalHeaderKey(env("HEADER_BODY_TRANSFORM", "X-Proxy-Body-Transform"))
@@ -211,6 +213,11 @@ func handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	method := r.Method
+	if override := strings.TrimSpace(r.Header.Get(hMethod)); override != "" {
+		method = override
+	}
+
 	body := io.Reader(r.Body)
 	bodyTransformed := false
 	if r.Header.Get(hTransform) == bodyTransformJSONToForm {
@@ -228,7 +235,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// build proxy request
-	pReq, err := http.NewRequestWithContext(r.Context(), r.Method, target, body)
+	pReq, err := http.NewRequestWithContext(r.Context(), method, target, body)
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return

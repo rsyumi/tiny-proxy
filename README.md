@@ -51,6 +51,7 @@ cp .env.example .env
 | `AUTH_WINDOW` | `30` | HMAC 시간 윈도우 (초) |
 | `WHITELIST` | | 허용 호스트 (쉼표 구분, `*` 와일드카드 지원) |
 | `HEADER_URL` | `X-Proxy-Url` | 대상 URL을 지정하는 헤더 이름 |
+| `HEADER_METHOD` | `X-Proxy-Method` | 대상 서버로 보낼 method를 지정하는 헤더 이름 |
 | `HEADER_PREFIX` | `X-Proxy-H-` | 대상 서버로 전달할 헤더 접두사 |
 | `HEADER_BULK` | `X-Proxy-Headers` | JSON으로 여러 헤더를 전달하는 헤더 이름 |
 | `HEADER_BODY_TRANSFORM` | `X-Proxy-Body-Transform` | 요청 body 변환 모드를 지정하는 헤더 이름 |
@@ -99,6 +100,15 @@ TLS_KEY=scripts/key.pem
 
 ```bash
 curl -H "X-Proxy-Url: https://example.com/api" http://localhost:8080
+```
+
+`X-Proxy-Method` 헤더로 대상 서버에 보낼 method를 지정합니다:
+
+```bash
+curl \
+  -H "X-Proxy-Url: https://api.example.com/data" \
+  -H "X-Proxy-Method: PATCH" \
+  http://localhost:8080
 ```
 
 `X-Proxy-H-` 접두사로 대상 서버에 헤더를 전달합니다:

@@ -16,12 +16,14 @@ func withProxyTestConfig(t *testing.T) {
 	oldWhitelist := whitelist
 	oldWLPatterns := wlPatterns
 	oldHURL := hURL
+	oldHMethod := hMethod
 	oldHTransform := hTransform
 
 	authMode = "none"
 	whitelist = nil
 	wlPatterns = nil
 	hURL = http.CanonicalHeaderKey("X-Proxy-Url")
+	hMethod = http.CanonicalHeaderKey("X-Test-Method")
 	hTransform = http.CanonicalHeaderKey("X-Test-Body-Transform")
 
 	t.Cleanup(func() {
@@ -29,6 +31,7 @@ func withProxyTestConfig(t *testing.T) {
 		whitelist = oldWhitelist
 		wlPatterns = oldWLPatterns
 		hURL = oldHURL
+		hMethod = oldHMethod
 		hTransform = oldHTransform
 	})
 }
@@ -163,6 +166,31 @@ func TestHandleLeavesBodyUntouchedWithoutTransformHeader(t *testing.T) {
 	}
 	if gotBody != `{"raw":true}` {
 		t.Fatalf("upstream body = %q, want raw JSON body", gotBody)
+	}
+}
+
+func TestHandleUsesProxyMethodHeaderForUpstreamRequest(t *testing.T) {
+	withProxyTestConfig(t)
+
+	var gotMethod string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.test/", nil)
+	req.Header.Set(hURL, upstream.URL)
+	req.Header.Set(hMethod, http.MethodPatch)
+	rr := httptest.NewRecorder()
+
+	handle(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("proxy status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	if gotMethod != http.MethodPatch {
+		t.Fatalf("upstream method = %q, want %q", gotMethod, http.MethodPatch)
 	}
 }
 
