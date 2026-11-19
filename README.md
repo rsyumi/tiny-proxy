@@ -43,6 +43,7 @@ cp .env.example .env
 |---|---|---|
 | `PORT` | `8080` | 수신 포트 |
 | `TIMEOUT` | `30s` | 업스트림 요청 타임아웃 |
+| `GOMAXPROCS` | `1 ~ 2` | 동시에 Go 코드를 실행할 OS 스레드 수 (소형 VM에선 `1` 권장) |
 | `TLS_CERT` | | TLS 인증서 파일 경로 |
 | `TLS_KEY` | | TLS 개인키 파일 경로 |
 | `AUTH_MODE` | `none` | 인증 모드: `none`, `key`, `hash` |

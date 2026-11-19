@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -191,6 +192,167 @@ func TestHandleUsesProxyMethodHeaderForUpstreamRequest(t *testing.T) {
 	}
 	if gotMethod != http.MethodPatch {
 		t.Fatalf("upstream method = %q, want %q", gotMethod, http.MethodPatch)
+	}
+}
+
+// upstreamCapture records how the upstream saw the proxied request body.
+type upstreamCapture struct {
+	length   int64
+	encoding []string
+	body     string
+}
+
+func newCapturingUpstream(t *testing.T, got *upstreamCapture) *httptest.Server {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.length = r.ContentLength
+		got.encoding = r.TransferEncoding
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		got.body = string(b)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestHandleForwardsRequestContentLength(t *testing.T) {
+	withProxyTestConfig(t)
+
+	var got upstreamCapture
+	upstream := newCapturingUpstream(t, &got)
+
+	const payload = `{"raw":true}`
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.test/", strings.NewReader(payload))
+	req.Header.Set(hURL, upstream.URL)
+	rr := httptest.NewRecorder()
+
+	handle(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("proxy status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	if got.length != int64(len(payload)) {
+		t.Fatalf("upstream content-length = %d, want %d", got.length, len(payload))
+	}
+	if len(got.encoding) != 0 {
+		t.Fatalf("upstream transfer-encoding = %v, want none", got.encoding)
+	}
+	if got.body != payload {
+		t.Fatalf("upstream body = %q, want %q", got.body, payload)
+	}
+}
+
+func TestHandleKeepsUnknownLengthBodyChunked(t *testing.T) {
+	withProxyTestConfig(t)
+
+	var got upstreamCapture
+	upstream := newCapturingUpstream(t, &got)
+
+	// A reader of unknown type makes httptest report ContentLength -1,
+	// which is what a chunked client upload looks like.
+	const payload = `{"raw":true}`
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.test/", struct{ io.Reader }{strings.NewReader(payload)})
+	req.Header.Set(hURL, upstream.URL)
+	rr := httptest.NewRecorder()
+
+	handle(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("proxy status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	if got.length != -1 {
+		t.Fatalf("upstream content-length = %d, want -1", got.length)
+	}
+	if len(got.encoding) != 1 || got.encoding[0] != "chunked" {
+		t.Fatalf("upstream transfer-encoding = %v, want [chunked]", got.encoding)
+	}
+	if got.body != payload {
+		t.Fatalf("upstream body = %q, want %q", got.body, payload)
+	}
+}
+
+func TestHandleSendsTransformedBodyLength(t *testing.T) {
+	withProxyTestConfig(t)
+
+	var got upstreamCapture
+	upstream := newCapturingUpstream(t, &got)
+
+	// The JSON body is longer than its form encoding, so forwarding the
+	// client's length would be wrong here.
+	const payload = `{ "grant_type" : "client_credentials" }`
+	const want = "grant_type=client_credentials"
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.test/", strings.NewReader(payload))
+	req.Header.Set(hURL, upstream.URL)
+	req.Header.Set(hTransform, "json-to-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	handle(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("proxy status = %d, want %d", rr.Code, http.StatusNoContent)
+	}
+	if got.body != want {
+		t.Fatalf("upstream body = %q, want %q", got.body, want)
+	}
+	if got.length != int64(len(want)) {
+		t.Fatalf("upstream content-length = %d, want %d", got.length, len(want))
+	}
+	if len(got.encoding) != 0 {
+		t.Fatalf("upstream transfer-encoding = %v, want none", got.encoding)
+	}
+}
+
+func TestHandleStreamsResponseLargerThanBuffer(t *testing.T) {
+	withProxyTestConfig(t)
+
+	want := make([]byte, 3*streamBufSize+123)
+	for i := range want {
+		want[i] = byte(i % 251)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(want)
+	}))
+	defer upstream.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.test/", nil)
+	req.Header.Set(hURL, upstream.URL)
+	rr := httptest.NewRecorder()
+
+	handle(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("proxy status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if !bytes.Equal(rr.Body.Bytes(), want) {
+		t.Fatalf("proxied body differs from upstream body: got %d bytes, want %d", rr.Body.Len(), len(want))
+	}
+}
+
+func TestResolveMaxProcs(t *testing.T) {
+	tests := []struct {
+		name    string
+		setting string
+		current int
+		want    int
+	}{
+		{"unset on many cores is capped", "", 32, defaultMaxProcs},
+		{"unset on one core stays at one", "", 1, 1},
+		{"explicit value below the cap", "1", 32, 1},
+		{"explicit value above the cap is honored", "8", 32, 8},
+		{"non-numeric setting falls back to the cap", "abc", 32, defaultMaxProcs},
+		{"zero falls back to the cap", "0", 4, defaultMaxProcs},
+		{"negative falls back to the current value", "-1", 1, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveMaxProcs(tt.setting, tt.current); got != tt.want {
+				t.Fatalf("resolveMaxProcs(%q, %d) = %d, want %d", tt.setting, tt.current, got, tt.want)
+			}
+		})
 	}
 }
 

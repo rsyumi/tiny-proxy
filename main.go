@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,11 +48,14 @@ var (
 const (
 	bodyTransformJSONToForm = "json-to-form-urlencoded"
 	maxTransformBodyBytes   = 64 << 10
+	streamBufSize           = 64 << 10
+	defaultMaxProcs         = 2
 )
 
 var errTransformBodyTooLarge = errors.New("transform body too large")
 
-var pool = sync.Pool{New: func() any { return make([]byte, 8192) }}
+// Pooled as *[]byte so that Put does not allocate a slice header per stream.
+var pool = sync.Pool{New: func() any { b := make([]byte, streamBufSize); return &b }}
 
 var client *http.Client
 
@@ -90,8 +94,23 @@ func env(k, d string) string {
 	return d
 }
 
+// resolveMaxProcs returns the GOMAXPROCS value to run with: an explicit
+// positive setting wins, otherwise the current value capped at
+// defaultMaxProcs. The proxy is I/O bound, and extra Ps mostly add scheduler
+// wakeups per forwarded chunk.
+func resolveMaxProcs(setting string, current int) int {
+	if n, err := strconv.Atoi(setting); err == nil && n > 0 {
+		return n
+	}
+	return min(current, defaultMaxProcs)
+}
+
 func init() {
 	loadEnv(".env")
+
+	// The Go runtime reads GOMAXPROCS before init runs, so a value that only
+	// exists in .env has to be applied here.
+	runtime.GOMAXPROCS(resolveMaxProcs(os.Getenv("GOMAXPROCS"), runtime.GOMAXPROCS(0)))
 
 	port = env("PORT", "8080")
 	authMode = env("AUTH_MODE", "none")
@@ -120,8 +139,8 @@ func init() {
 
 	client = &http.Client{
 		Transport: &http.Transport{
-			MaxIdleConns:          10,
-			MaxIdleConnsPerHost:   5,
+			MaxIdleConns:          128,
+			MaxIdleConnsPerHost:   64,
 			IdleConnTimeout:       90 * time.Second,
 			ResponseHeaderTimeout: timeout,
 			DisableCompression:    true,
@@ -160,10 +179,10 @@ func main() {
 	}
 	var err error
 	if tlsCert != "" && tlsKey != "" {
-		log.Printf("tiny-proxy/%s :%s tls=on auth=%s whitelist=%d+%d timeout=%s", version, port, authMode, len(whitelist), len(wlPatterns), timeout)
+		log.Printf("tiny-proxy/%s :%s tls=on auth=%s whitelist=%d+%d timeout=%s procs=%d", version, port, authMode, len(whitelist), len(wlPatterns), timeout, runtime.GOMAXPROCS(0))
 		err = srv.ListenAndServeTLS(tlsCert, tlsKey)
 	} else {
-		log.Printf("tiny-proxy/%s :%s tls=off auth=%s whitelist=%d+%d timeout=%s", version, port, authMode, len(whitelist), len(wlPatterns), timeout)
+		log.Printf("tiny-proxy/%s :%s tls=off auth=%s whitelist=%d+%d timeout=%s procs=%d", version, port, authMode, len(whitelist), len(wlPatterns), timeout, runtime.GOMAXPROCS(0))
 		err = srv.ListenAndServe()
 	}
 	log.Println(err)
@@ -239,6 +258,12 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
+	}
+	if !bodyTransformed {
+		// NewRequest only knows the length of in-memory readers. Pass the
+		// client's length on, or the upstream gets a chunked body with no
+		// Content-Length.
+		pReq.ContentLength = r.ContentLength
 	}
 
 	// forward headers (bulk JSON, then prefix overrides)
@@ -352,8 +377,9 @@ func formScalar(value any) (string, bool) {
 // --- streaming ---
 
 func stream(w http.ResponseWriter, src io.Reader) {
-	buf := pool.Get().([]byte)
-	defer pool.Put(buf)
+	bp := pool.Get().(*[]byte)
+	defer pool.Put(bp)
+	buf := *bp
 
 	f, canFlush := w.(http.Flusher)
 	for {
