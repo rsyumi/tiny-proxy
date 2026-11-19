@@ -385,8 +385,11 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// copy response headers (skip hop-by-hop)
+	// Copy response headers, keeping the proxy's own CORS policy.
 	for k, vs := range resp.Header {
+		if strings.HasPrefix(k, "Access-Control-") {
+			continue
+		}
 		switch k {
 		case "Connection", "Keep-Alive", "Transfer-Encoding", "Te", "Trailer", "Upgrade":
 			continue

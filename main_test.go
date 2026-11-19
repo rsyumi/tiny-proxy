@@ -311,6 +311,39 @@ func TestHandleSendsTransformedBodyLength(t *testing.T) {
 	}
 }
 
+func TestHandleKeepsProxyCORSHeaders(t *testing.T) {
+	withProxyTestConfig(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "https://other.example")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("X-Request-Id", "upstream-id")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.test/", nil)
+	req.Header.Set("Origin", "https://client.example")
+	req.Header.Set(hURL, upstream.URL)
+	rr := httptest.NewRecorder()
+	handle(rr, req)
+
+	resp := rr.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("proxy status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if got := resp.Header.Values("Access-Control-Allow-Origin"); len(got) != 1 || got[0] != "*" {
+		t.Errorf("allow-origin = %q, want a single *", got)
+	}
+	if got := resp.Header.Values("Access-Control-Allow-Credentials"); len(got) != 0 {
+		t.Errorf("allow-credentials = %q, want none", got)
+	}
+	if got := resp.Header.Get("X-Request-Id"); got != "upstream-id" {
+		t.Errorf("request ID = %q, want upstream-id", got)
+	}
+}
+
 func TestHandleStreamsResponseLargerThanBuffer(t *testing.T) {
 	withProxyTestConfig(t)
 
