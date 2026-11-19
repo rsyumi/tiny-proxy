@@ -361,6 +361,25 @@ func TestResolveMaxProcs(t *testing.T) {
 	}
 }
 
+func TestListenAddr(t *testing.T) {
+	tests := []struct {
+		name, host, port, want string
+	}{
+		{"empty host listens on all interfaces", "", "8080", ":8080"},
+		{"IPv4 host", "127.0.0.1", "8080", "127.0.0.1:8080"},
+		{"hostname", "localhost", "9000", "localhost:9000"},
+		{"bare IPv6 host", "::1", "8080", "[::1]:8080"},
+		{"bracketed IPv6 host", "[::1]", "8080", "[::1]:8080"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := listenAddr(tt.host, tt.port); got != tt.want {
+				t.Fatalf("listenAddr(%q, %q) = %q, want %q", tt.host, tt.port, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEnvDuration(t *testing.T) {
 	const key = "TINY_PROXY_TEST_DURATION"
 	const fallback = 7 * time.Second

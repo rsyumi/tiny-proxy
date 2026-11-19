@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,6 +32,7 @@ var version = "dev"
 // --- config (loaded once at init) ---
 
 var (
+	bindHost   string // listen host, empty for all interfaces
 	port       string
 	authMode   string // "none" | "key" | "hash"
 	authKey    string
@@ -116,6 +118,13 @@ func envDuration(k string, d time.Duration) time.Duration {
 	return d
 }
 
+// listenAddr joins host and port for http.Server.Addr. An empty host listens
+// on all interfaces. An IPv6 host may be given with or without brackets.
+func listenAddr(host, port string) string {
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	return net.JoinHostPort(host, port)
+}
+
 // resolveMaxProcs returns the GOMAXPROCS value to run with: an explicit
 // positive setting wins, otherwise the current value capped at
 // defaultMaxProcs. The proxy is I/O bound, and extra Ps mostly add scheduler
@@ -134,6 +143,7 @@ func init() {
 	// exists in .env has to be applied here.
 	runtime.GOMAXPROCS(resolveMaxProcs(os.Getenv("GOMAXPROCS"), runtime.GOMAXPROCS(0)))
 
+	bindHost = env("HOST", "")
 	port = env("PORT", "8080")
 	authMode = env("AUTH_MODE", "none")
 	authKey = env("AUTH_KEY", "")
@@ -194,7 +204,7 @@ func init() {
 
 func main() {
 	srv := &http.Server{
-		Addr:              ":" + port,
+		Addr:              listenAddr(bindHost, port),
 		Handler:           http.HandlerFunc(handle),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -212,7 +222,7 @@ func main() {
 	if useTLS {
 		tlsState = "on"
 	}
-	log.Printf("tiny-proxy/%s :%s tls=%s auth=%s whitelist=%d+%d timeout=%s procs=%d", version, port, tlsState, authMode, len(whitelist), len(wlPatterns), timeout, runtime.GOMAXPROCS(0))
+	log.Printf("tiny-proxy/%s %s tls=%s auth=%s whitelist=%d+%d timeout=%s procs=%d", version, srv.Addr, tlsState, authMode, len(whitelist), len(wlPatterns), timeout, runtime.GOMAXPROCS(0))
 
 	errc := make(chan error, 1)
 	go func() {
