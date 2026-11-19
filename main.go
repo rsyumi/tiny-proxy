@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -15,10 +16,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -43,6 +47,9 @@ var (
 	timeout    time.Duration
 	tlsCert    string
 	tlsKey     string
+
+	shutdownDelay   time.Duration // keep serving this long after a stop signal
+	shutdownTimeout time.Duration // max wait for in-flight requests on stop
 )
 
 const (
@@ -50,7 +57,13 @@ const (
 	maxTransformBodyBytes   = 64 << 10
 	streamBufSize           = 64 << 10
 	defaultMaxProcs         = 2
+
+	// Stays under a 30s SIGTERM-to-SIGKILL grace period.
+	defaultShutdownTimeout = 25 * time.Second
 )
+
+// draining is set on a stop signal; /_health then reports 503.
+var draining atomic.Bool
 
 var errTransformBodyTooLarge = errors.New("transform body too large")
 
@@ -89,6 +102,15 @@ func loadEnv(path string) {
 
 func env(k, d string) string {
 	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
+}
+
+// envDuration parses a non-negative duration, falling back to d when the
+// value is unset, malformed or negative.
+func envDuration(k string, d time.Duration) time.Duration {
+	if v, err := time.ParseDuration(os.Getenv(k)); err == nil && v >= 0 {
 		return v
 	}
 	return d
@@ -136,6 +158,8 @@ func init() {
 	} else {
 		timeout = 30 * time.Second
 	}
+	shutdownDelay = envDuration("SHUTDOWN_DELAY", 0)
+	shutdownTimeout = envDuration("SHUTDOWN_TIMEOUT", defaultShutdownTimeout)
 
 	client = &http.Client{
 		Transport: &http.Transport{
@@ -177,16 +201,62 @@ func main() {
 		MaxHeaderBytes:    1 << 16,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
-	var err error
-	if tlsCert != "" && tlsKey != "" {
-		log.Printf("tiny-proxy/%s :%s tls=on auth=%s whitelist=%d+%d timeout=%s procs=%d", version, port, authMode, len(whitelist), len(wlPatterns), timeout, runtime.GOMAXPROCS(0))
-		err = srv.ListenAndServeTLS(tlsCert, tlsKey)
-	} else {
-		log.Printf("tiny-proxy/%s :%s tls=off auth=%s whitelist=%d+%d timeout=%s procs=%d", version, port, authMode, len(whitelist), len(wlPatterns), timeout, runtime.GOMAXPROCS(0))
-		err = srv.ListenAndServe()
+
+	// The first SIGINT or SIGTERM starts a graceful shutdown. Calling stop
+	// restores the default handling, so a second signal exits at once.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	useTLS := tlsCert != "" && tlsKey != ""
+	tlsState := "off"
+	if useTLS {
+		tlsState = "on"
 	}
-	log.Println(err)
-	fmt.Scanln()
+	log.Printf("tiny-proxy/%s :%s tls=%s auth=%s whitelist=%d+%d timeout=%s procs=%d", version, port, tlsState, authMode, len(whitelist), len(wlPatterns), timeout, runtime.GOMAXPROCS(0))
+
+	errc := make(chan error, 1)
+	go func() {
+		if useTLS {
+			errc <- srv.ListenAndServeTLS(tlsCert, tlsKey)
+		} else {
+			errc <- srv.ListenAndServe()
+		}
+	}()
+
+	select {
+	case err := <-errc:
+		// Startup failed. Keep the console open so the error stays visible,
+		// and let signals end the process while it waits.
+		stop()
+		log.Println(err)
+		fmt.Scanln()
+		return
+	case <-ctx.Done():
+	}
+	stop()
+
+	log.Printf("shutting down: delay=%s timeout=%s", shutdownDelay, shutdownTimeout)
+	if err := shutdown(srv, shutdownDelay, shutdownTimeout); err != nil {
+		log.Printf("shutdown: %v, closed remaining connections", err)
+		return
+	}
+	log.Println("shutdown complete")
+}
+
+// shutdown marks the server as draining, keeps serving for delay, then stops
+// accepting connections and waits up to timeout for in-flight requests before
+// closing the rest.
+func shutdown(srv *http.Server, delay, timeout time.Duration) error {
+	draining.Store(true)
+	time.Sleep(delay)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	err := srv.Shutdown(ctx)
+	if err != nil {
+		srv.Close()
+	}
+	return err
 }
 
 // --- handler ---
@@ -194,6 +264,10 @@ func main() {
 func handle(w http.ResponseWriter, r *http.Request) {
 	// health check
 	if r.URL.Path == "/_health" {
+		if draining.Load() {
+			http.Error(w, "shutting down", http.StatusServiceUnavailable)
+			return
+		}
 		w.Write([]byte("ok"))
 		return
 	}

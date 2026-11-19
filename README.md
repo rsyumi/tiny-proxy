@@ -44,6 +44,8 @@ cp .env.example .env
 | `PORT` | `8080` | 수신 포트 |
 | `TIMEOUT` | `30s` | 업스트림 요청 타임아웃 |
 | `GOMAXPROCS` | `1 ~ 2` | 동시에 Go 코드를 실행할 OS 스레드 수 (소형 VM에선 `1` 권장) |
+| `SHUTDOWN_DELAY` | `0s` | 종료 신호 후 요청을 계속 처리하는 시간 (로드밸런서 뒤에서 사용) |
+| `SHUTDOWN_TIMEOUT` | `25s` | 종료 시 진행 중인 요청을 기다리는 최대 시간 |
 | `TLS_CERT` | | TLS 인증서 파일 경로 |
 | `TLS_KEY` | | TLS 개인키 파일 경로 |
 | `AUTH_MODE` | `none` | 인증 모드: `none`, `key`, `hash` |
@@ -145,3 +147,14 @@ curl \
 이 모드는 최상위 JSON object만 지원하며, 문자열/숫자/불리언 값과 그 배열을 form 값으로 변환합니다. 중첩 object나 중첩 배열은 `400 Bad Request`로 거절됩니다. 변환 대상 JSON body는 최대 64 KiB까지 허용되며, 초과하면 `413 Request Entity Too Large`로 거절됩니다.
 
 헬스체크: `GET /_health`
+
+## 종료 동작
+
+`SIGTERM` 또는 `SIGINT`(Ctrl+C)를 받으면:
+
+1. `/_health`가 `503`을 반환합니다.
+2. `SHUTDOWN_DELAY` 동안 요청을 계속 처리합니다.
+3. 새 연결을 받지 않고, 진행 중인 요청(스트리밍 포함)을 최대 `SHUTDOWN_TIMEOUT`까지 기다립니다.
+4. 남은 연결을 끊고 종료합니다.
+
+두 번째 신호를 받으면 즉시 종료합니다. `SHUTDOWN_DELAY + SHUTDOWN_TIMEOUT`은 실행 환경의 강제 종료(SIGKILL) 대기 시간보다 짧아야 합니다.
